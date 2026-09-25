@@ -1,0 +1,113 @@
+Real-Time Data Processing (Socket Streaming) for basic streaming : open a new terminal for master and execute nc -lk 9999
+
+# Inside PySpark shell
+lines = spark.readStream \
+    .format("socket") \
+    .option("host", "master") \
+    .option("port", 9999) \
+    .load()
+
+query = lines.writeStream \
+    .outputMode("append") \
+    .format("console") \
+    .start()
+
+
+===================================================================================================================================================
+
+DStreams (Legacy RDD)
+
+from pyspark.streaming import StreamingContext
+ssc = StreamingContext(sc, 2)
+dstream = ssc.socketTextStream("master", 9999)
+dstream.pprint()
+ssc.start()
+
+DStreams trigger repetitive mini-RDD jobs every 2 seconds regardless of whether data arrives, whereas Structured Streaming optimizes execution based on triggers. Stop the DStream context using ssc.stop(False).
+
+==================================================================================================================================================================
+
+Windowed Operations (Tumblings & Sliding Windows)
+
+
+from pyspark.sql.functions import current_timestamp, window, explode, split
+
+lines = spark.readStream.format("socket").option("host", "master").option("port", 9999).load()
+
+words = lines.select(explode(split(lines.value, " ")).alias("word"), current_timestamp().alias("timestamp"))
+
+windowed_counts = words.groupBy(
+    window("timestamp", "10 minutes", "5 minutes"),
+    "word"
+).count()
+
+query = windowed_counts.writeStream \
+    .outputMode("complete") \
+    .format("console") \
+    .option("truncate", "false") \
+    .start()
+
+
+===============================================================================================================================================================================
+
+
+
+Fault Tolerance & Checkpointing 
+
+mkdir -p /tmp/spark_checkpoint
+
+words = spark.readStream.format("socket").option("host", "master").option("port", 9999).load()
+counts = words.groupBy("value").count()
+
+query = counts.writeStream \
+    .outputMode("complete") \
+    .format("console") \
+    .option("checkpointLocation", "/tmp/spark_checkpoint") \
+    .start()
+
+
+stop and rerun job so that you wont loose data
+===============================================================================================================================================================================
+
+File Stream Ingestion :
+
+create the input streaming directory and clean out any old checkpoint metadata:
+
+# 1. Create HDFS input and output directories
+hdfs dfs -mkdir -p /user/hdfs/stream_input
+hdfs dfs -mkdir -p /user/hdfs/stream_output
+
+# 2. Remove any previous checkpoint path in HDFS to avoid offset conflicts
+hdfs dfs -rm -r -f /user/hdfs/spark_checkpoint
+
+
+And run below code
+
+from pyspark.sql.functions import explode, split
+
+# 1. Read file stream using relative HDFS path
+lines = spark.readStream.text("/user/hdfs/stream_input")
+
+# 2. Transformations
+words = lines.select(explode(split(lines.value, " ")).alias("word"))
+counts = words.groupBy("word").count()
+
+# 3. Write stream using relative HDFS checkpoint path
+query = counts.writeStream \
+    .outputMode("complete") \
+    .format("console") \
+    .option("checkpointLocation", "/user/hdfs/spark_checkpoint") \
+    .start()
+
+
+
+To add input data without causing race conditions or file locks, write your data file locally first, then copy it into your HDFS stream input folder:
+
+
+echo "apple banana apple orange" > /tmp/batch1.txt
+hdfs dfs -put /tmp/batch1.txt /user/hdfs/stream_input/
+echo "apple strawberry banana" > /tmp/batch2.txt
+hdfs dfs -put /tmp/batch2.txt /user/hdfs/stream_input/
+
+================================================================================================================================================================================
+
